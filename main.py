@@ -8,8 +8,6 @@ import numpy as np
 import einops
 from tqdm.notebook import tqdm
 import plotly.express as px
-import webbrowser
-import re
 import itertools
 from jaxtyping import Float, Int, Bool
 from typing import List, Optional, Callable, Tuple, Dict, Literal, Set, Union
@@ -43,19 +41,18 @@ def load_demo_gpt2():
 # %%
 # model = HookedTransformer.from_pretrained("solu-2l", fold_ln=False, center_unembed=False, center_writing_weights=False)
 model = HookedTransformer.from_pretrained("gpt2-small", fold_ln=False, center_unembed=False, center_writing_weights=False)
+model = HookedTransformer.from_pretrained("tiny-stories-2L-33M", fold_ln=False, center_unembed=False, center_writing_weights=False)
 model.set_use_attn_result(True)
 model.set_use_split_qkv_input(True)
-reference_gpt2 = HookedTransformer.from_pretrained("gpt2-small", fold_ln=False, center_unembed=False, center_writing_weights=False)
-model.tokenizer = reference_gpt2.tokenizer
+model.set_use_hook_mlp_in(True)
 model.to(device)
-reference_gpt2.to(device)
 # %%
 from ioi_dataset import NAMES, IOIDataset
-N = 25
+N = 50
 ioi_dataset = IOIDataset(
 	prompt_type="mixed",
 	N=N,
-	tokenizer=reference_gpt2.tokenizer,
+	tokenizer=model.tokenizer,
 	prepend_bos=False,
 	seed=1,
 	device=str(device)
@@ -161,8 +158,6 @@ for i in range(N):
 
 
 # %%
-
-
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from graphviz import Digraph
@@ -185,7 +180,6 @@ class HookNode():
 		return self.name == other.name and self.index == other.index
 	
 	def __hash__(self):
-		# we need a hash function to use the HookNode as a key in a dictionary
 		idx_val = 0
 		for i, val in enumerate(self.index):
 			if isinstance(val, int):
@@ -207,7 +201,6 @@ class Edge():
 	def __hash__(self):
 		return hash((self.sender, self.receiver))
 	
-
 class ComputationalGraph():
 	def __init__(self, n_heads, n_layers, heads, empty=False):
 		self.n_heads = n_heads
@@ -217,37 +210,33 @@ class ComputationalGraph():
 			self.graph = OrderedDict()
 		else:
 			self.graph = self.build_ioi_computational_graph()
-			# assert not self.check_for_cycle()
+			assert not self.check_for_cycle()
 			self.graph = self.topological_sort()
-			print(self.graph.keys())
+			no_resid_post = True
+			for k in self.graph.keys():
+				if 'resid_post' in k.name:
+					no_resid_post = False
+			if no_resid_post:
+				raise ValueError('No resid post')
 
 	def is_cyclic_util(self, v, visited, rec_stack):
-		print()
-		print('Visiting: {}'.format(v))
 		visited.add(v)
 		rec_stack.add(v)
 		for neighbor in self.graph[v]:
-			# print(len(self.graph))
 			if neighbor not in visited:
-				print('Neighbor: {}'.format(neighbor))
-				# print(len(self.graph))
 				if self.is_cyclic_util(neighbor, visited, rec_stack):
 					return True
 			elif neighbor in rec_stack:
-				print('Node: {}'.format(v))
-				print('Bad neighbor: {}'.format(neighbor))
 				return True
 		rec_stack.remove(v)
 		return False
 
 	def check_for_cycle(self):
-		
 		# return True if there is a cycle in the graph
 		# else return False
 		visited = set()
 		rec_stack = set()
 		for node in self.graph:
-			print('Node: {}'.format(node))
 			if node not in visited:
 				if self.is_cyclic_util(node, visited, rec_stack):
 					return True
@@ -273,7 +262,6 @@ class ComputationalGraph():
 		return HookNode(name, idx, dir)
 
 	def build_ioi_computational_graph(self):
-		# TODO: add MLPs?
 		g = defaultdict(list) # receiver -> senders
 
 		heads = self.heads
@@ -369,187 +357,30 @@ class ComputationalGraph():
 
 		# turn g into regular dict
 		g = {k: v for k, v in g.items()}
+		no_resid_post = True
+		for k in g.keys():
+			if 'resid_post' in k.name:
+				no_resid_post = False
+		if no_resid_post:
+			raise ValueError('No resid post')
+
 		# now go through all of the nodes and add the ones that are not in the graph
 		new_g = {}
 		for k, v in g.items():
+			new_g[k] = v
 			for sender in v:
-				if sender not in g:
+				if sender not in g.keys():
 					new_g[sender] = []
 				else:
 					new_g[sender] = g[sender]
+		
+		no_resid_post = True
+		for k in new_g.keys():
+			if 'resid_post' in k.name:
+				no_resid_post = False
+		if no_resid_post:
+			raise ValueError('No resid post')
 		return new_g
-
-
-
-
-
-		# # create heads subgraph
-		# heads = self.heads
-		# for send in heads:
-		# 	for rec in heads:
-		# 		if send[0] < rec[0]:
-		# 			send_layer, send_head = send
-		# 			rec_layer, rec_head = rec
-		# 			send_hook_name = utils.get_act_name("result", send_layer)
-		# 			send_hook_index = (slice(None), slice(None), send_head, slice(None))
-		# 			rec_hook_name_q = utils.get_act_name("q_input", rec_layer)
-		# 			rec_hook_name_k = utils.get_act_name("k_input", rec_layer)
-		# 			rec_hook_name_v = utils.get_act_name("v_input", rec_layer)
-		# 			rec_hook_index = (slice(None), slice(None), rec_head, slice(None))
-		# 			sender = HookNode(send_hook_name, send_hook_index, dir='OUT')
-		# 			receiver_q = HookNode(rec_hook_name_q, rec_hook_index, dir='IN')
-		# 			receiver_k = HookNode(rec_hook_name_k, rec_hook_index, dir='IN')
-		# 			receiver_v = HookNode(rec_hook_name_v, rec_hook_index, dir='IN')
-		# 			g[receiver_q].append(sender)
-		# 			g[receiver_k].append(sender)
-		# 			g[receiver_v].append(sender)
-
-		# # add MLPs
-		# mlps_in = []
-		# mlps_out = []
-		# for layer in range(self.n_layers):
-		# 	mlp_in_hook_name = f'blocks.{layer}.hook_mlp_in'
-		# 	mlp_in_hook_index = (slice(None), slice(None), slice(None))
-		# 	mlp_in = HookNode(mlp_in_hook_name, mlp_in_hook_index, dir='IN')
-		# 	mlps_in.append(mlp_in)
-
-		# 	mlp_out_hook_name = f'blocks.{layer}.hook_mlp_out'
-		# 	mlp_out_hook_index = (slice(None), slice(None), slice(None))
-		# 	mlp_out = HookNode(mlp_out_hook_name, mlp_out_hook_index, dir='OUT')
-		# 	mlps_out.append(mlp_out)
-
-
-		# for mlp_out_layer in range(self.n_layers - 1):
-		# 	mlp_out_hook_name = utils.get_act_name("mlp_out", mlp_out_layer)
-		# 	mlp_out_hook_index = (slice(None), slice(None), slice(None))
-		# 	mlp_out = HookNode(mlp_out_hook_name, mlp_out_hook_index, dir='OUT')
-		# 	# connect mlp out to all heads in downstream layers
-		# 	for rec in heads:
-		# 		rec_layer, rec_head = rec
-		# 		if rec_layer > mlp_out_layer:
-		# 			rec_hook_name_q = utils.get_act_name("q_input", rec_layer)
-		# 			rec_hook_name_k = utils.get_act_name("k_input", rec_layer)
-		# 			rec_hook_name_v = utils.get_act_name("v_input", rec_layer)
-		# 			rec_hook_index = (slice(None), slice(None), rec_head, slice(None))
-		# 			receiver_q = HookNode(rec_hook_name_q, rec_hook_index, dir='IN')
-		# 			receiver_k = HookNode(rec_hook_name_k, rec_hook_index, dir='IN')
-		# 			receiver_v = HookNode(rec_hook_name_v, rec_hook_index, dir='IN')
-		# 			g[receiver_q].append(mlp_out)
-		# 			g[receiver_k].append(mlp_out)
-		# 			g[receiver_v].append(mlp_out)
-
-		
-		# for mlp_in_layer in range(1, self.n_layers):
-		# 	for send in heads:
-		# 		send_layer, send_head = send
-		# 		if send_layer <= mlp_in_layer:
-		# 			mlp_in_hook_name = utils.get_act_name("mlp_in", mlp_in_layer)
-		# 			mlp_in_hook_index = (slice(None), slice(None), slice(None))
-		# 			mlp_in = HookNode(mlp_in_hook_name, mlp_in_hook_index, dir='IN')
-		# 			send_hook_name = utils.get_act_name("result", send_layer)
-		# 			send_hook_index = (slice(None), slice(None), send_head, slice(None))
-		# 			sender = HookNode(send_hook_name, send_hook_index, dir='OUT')
-		# 			print()
-		# 			print(mlp_in)
-		# 			print(sender)
-		# 			g[mlp_in].append(sender)
-
-		# # add resid pre and resid post
-		# resid_pre_hook_name = utils.get_act_name("resid_pre", 0)
-		# resid_pre_hook_index = (slice(None), slice(None), slice(None))
-		# resid_pre = HookNode(resid_pre_hook_name, resid_pre_hook_index, dir='OUT')
-		# g[resid_pre] = []
-		# for rec in heads:
-		# 	rec_layer, rec_head = rec
-		# 	rec_hook_name_q = utils.get_act_name("q_input", rec_layer)
-		# 	rec_hook_name_k = utils.get_act_name("k_input", rec_layer)
-		# 	rec_hook_name_v = utils.get_act_name("v_input", rec_layer)
-		# 	rec_hook_index = (slice(None), slice(None), rec_head, slice(None))
-		# 	receiver_q = HookNode(rec_hook_name_q, rec_hook_index, dir='IN')
-		# 	receiver_k = HookNode(rec_hook_name_k, rec_hook_index, dir='IN')
-		# 	receiver_v = HookNode(rec_hook_name_v, rec_hook_index, dir='IN')
-		# 	g[receiver_q].append(resid_pre)
-		# 	g[receiver_k].append(resid_pre)
-		# 	g[receiver_v].append(resid_pre)
-		
-		# for layer in range(self.n_layers):
-		# 	mlp_in_hook_name = utils.get_act_name("mlp_in", layer)
-		# 	mlp_in_hook_index = (slice(None), slice(None), slice(None))
-		# 	mlp_in = HookNode(mlp_in_hook_name, mlp_in_hook_index, dir='IN')
-		# 	g[mlp_in].append(resid_pre)
-
-		# for rec_layer in range(1, self.n_layers):
-		# 	mlp_in_hook_name = utils.get_act_name("mlp_in", rec_layer)
-		# 	mlp_in_hook_index = (slice(None), slice(None), slice(None))
-		# 	mlp_in = HookNode(mlp_in_hook_name, mlp_in_hook_index, dir='IN')			
-		# 	for send_layer in range(rec_layer):
-		# 		mlp_out_hook_name = utils.get_act_name("mlp_out", send_layer)
-		# 		mlp_out_hook_index = (slice(None), slice(None), slice(None))
-		# 		mlp_out = HookNode(mlp_out_hook_name, mlp_out_hook_index, dir='OUT')
-		# 		g[mlp_in].append(mlp_out)
-
-		# resid_post_hook_name = utils.get_act_name("resid_post", self.n_layers - 1)
-		# resid_post_hook_index = (slice(None), slice(None), slice(None))
-		# resid_post = HookNode(resid_post_hook_name, resid_post_hook_index, dir='IN')
-		# g[resid_post].append(resid_pre)
-		# for head in heads:
-		# 	head_layer, head_head = head
-		# 	head_hook_name = utils.get_act_name("result", head_layer)
-		# 	head_hook_index = (slice(None), slice(None), head_head, slice(None))
-		# 	head = HookNode(head_hook_name, head_hook_index, dir='OUT')
-		# 	g[resid_post].append(head)
-
-		# for i in range(self.n_layers):
-		# 	mlp_out_hook_name = utils.get_act_name("mlp_out", i)
-		# 	mlp_out_hook_index = (slice(None), slice(None), slice(None))
-		# 	mlp_out = HookNode(mlp_out_hook_name, mlp_out_hook_index, dir='OUT')
-		# 	g[resid_post].append(mlp_out)
-
-		# # now create direct computation edges between head inputs and outputs
-		# for head in heads:
-		# 	head_layer, head_head = head
-		# 	head_out_hook_name = utils.get_act_name("result", head_layer)
-		# 	head_out_hook_index = (slice(None), slice(None), head_head, slice(None))
-		# 	head_out = HookNode(head_out_hook_name, head_out_hook_index, dir='OUT')
-		# 	head_q_input_hook_name = utils.get_act_name("q_input", head_layer)
-		# 	head_q_input_hook_index = (slice(None), slice(None), head_head, slice(None))
-		# 	head_q_input = HookNode(head_q_input_hook_name, head_q_input_hook_index, dir='IN')
-		# 	head_k_input_hook_name = utils.get_act_name("k_input", head_layer)
-		# 	head_k_input_hook_index = (slice(None), slice(None), head_head, slice(None))
-		# 	head_k_input = HookNode(head_k_input_hook_name, head_k_input_hook_index, dir='IN')
-		# 	head_v_input_hook_name = utils.get_act_name("v_input", head_layer)
-		# 	head_v_input_hook_index = (slice(None), slice(None), head_head, slice(None))
-		# 	head_v_input = HookNode(head_v_input_hook_name, head_v_input_hook_index, dir='IN')
-		# 	g[head_out].append(head_q_input)
-		# 	g[head_out].append(head_k_input)
-		# 	g[head_out].append(head_v_input)
-
-
-		# out_filename = 'g.txt'
-		# # write out graph
-		# for k, v in g.items():
-		# 	with open(out_filename, 'a') as f:
-		# 		f.write('\n')
-		# 	for sender in v:
-		# 		sender_name = sender.__repr__()
-		# 		key_name = k.__repr__()
-		# 		sender_name = sender_name.split(' ')[0]
-		# 		key_name = key_name.split(' ')[0]
-		# 		with open(out_filename, 'a') as f:
-		# 			f.write(f'{sender_name} -> {key_name}\n')
-	
-		# # turn g into regular dict
-		# g = {k: v for k, v in g.items()}
-
-		# #hack to make sure all of the nodes are in the graph
-		# new_g = {}
-		# for k, v in g.items():
-		# 	for sender in v:
-		# 		if sender not in g:
-		# 			new_g[sender] = []
-		# 		else:
-		# 			new_g[sender] = g[sender]
-		# return new_g
 
 	def topological_sort(self):
 		visted = set()
@@ -624,18 +455,18 @@ class ComputationalGraph():
 
 		# Graph attributes
 		dot.attr('graph', size='12,12', ranksep='1', nodesep='0.5', dpi='300')
-		
+
 		# Node attributes
 		dot.attr('node', shape='circle', style='filled', fillcolor='lightgrey', fontcolor='black', fontsize='12')
 
 		# Edge attributes
-		dot.attr('edge', color='black', arrowsize='0.5')
+		dot.attr('edge', color='black', arrowsize='0.5', dir='back')
 
 		# Add nodes and edges to the graph
 		for node, edges in self.graph.items():
 			dot.node(str(node), str(node))
 			for edge in edges:
-				dot.edge(str(node), str(edge))
+				dot.edge(str(edge), str(node))
 
 		dot.render(filename, view=True)
 
@@ -658,6 +489,7 @@ class ACDC():
 		self.clean_logits: Optional[Float[Tensor, "batch seq d_vocab"]] = clean_logits
 		self.G = ComputationalGraph(n_heads, n_layers, self.heads)
 		self.H = ComputationalGraph(n_heads, n_layers, self.heads)
+		# self.kl_threshold = .00398
 		self.kl_threshold = .0575
 		# self.kl_threshold = 1e-4
 		self.bad_edges = []
@@ -677,25 +509,27 @@ class ACDC():
 				bad_edges = self.bad_edges[:]
 				for edge in incoming_edges:
 					kl_div_prev = self.ablate_paths(bad_edges)
-					print('Testing edge from {} to {}'.format(edge.sender, edge.receiver))
+					# print('Testing edge from {} to {}'.format(edge.sender, edge.receiver))
 					bad_edges.append(edge)
 					kl_div_new = self.ablate_paths(bad_edges)
 					kl_div_diff = kl_div_new - kl_div_prev
-					print('KL Divergence Diff: {}'.format(kl_div_diff))
-					print('Threshold: {}'.format(self.kl_threshold))
+					# print('KL Divergence Diff: {}'.format(kl_div_diff))
+					# print('Threshold: {}'.format(self.kl_threshold))
 					if kl_div_diff < self.kl_threshold:
-						print('Edge from {} to {} is bad'.format(edge.sender, edge.receiver))
+						# print('Edge from {} to {} is bad'.format(edge.sender, edge.receiver))
 						self.bad_edges.append(edge)
 					else:
 						print('Edge from {} to {} is good!'.format(edge.sender, edge.receiver))
-					print()
+						print('KL Divergence Diff: {}'.format(kl_div_diff))
+						print()
+					# print()
 				print('-'*20)
 		print('Edges at start: {}'.format(len(self.G.get_all_edges())))
 		print('Edges to remove: {}'.format(len(self.bad_edges)))
 		for edge in self.bad_edges:
 			self.H.remove_edge(edge)
 		print('Edges at end: {}'.format(len(self.H.get_all_edges())))
-		self.H.clean_dead_edges()
+		# self.H.clean_dead_edges()
 		good_edges = self.H.get_all_edges()
 		print('Final edges: {}'.format(len(good_edges)))
 		# return the good edges
@@ -731,54 +565,14 @@ class ACDC():
 		'''
 		Returns the KL divergence between two probability distributions averaged over batches.
 		'''
-		# test the ave logits diff
-		logit_diff = logits_to_ave_logit_diff_2(patched_logits, self.clean_dataset, per_prompt=False)
-		# print('Logit diff: {}'.format(logit_diff))
-
 		# Select the last logits from each sequence for comparison
 		last_word_indices = self.clean_dataset.word_idx['end']
 		orig_logits = orig_logits[torch.arange(self.clean_dataset.N), last_word_indices]
 		patched_logits = patched_logits[torch.arange(self.clean_dataset.N), last_word_indices]
-		# p_log_probs = torch.nn.functional.log_softmax(orig_logits, dim=-1)
-		# q_log_probs = torch.nn.functional.log_softmax(patched_logits, dim=-1)
-		# q_probs = t.exp(q_log_probs)
-		# kl_div = (q_probs * (t.log(q_probs) - p_log_probs)).sum(dim=-1)
-		# return kl_div.mean()
-
 		orig_logprobs = torch.nn.functional.log_softmax(orig_logits, dim=-1)
 		orig_probs = torch.exp(orig_logprobs)
 		patched_logprobs = torch.nn.functional.log_softmax(patched_logits, dim=-1)
 		patched_probs = torch.exp(patched_logprobs)
-
-		# debugging
-		# 1. Get the top 5 predicted tokens in orig_logits for each batch
-		# _, top5_orig_indices = torch.topk(orig_logits, 5, dim=-1)
-		# print('Top 5 original tokens')
-		# for i in range(5):
-		# 	print(model.to_str_tokens(top5_orig_indices[:, i].squeeze()))
-		
-		# # 2. Get the top 5 predicted tokens in patched_logits for each batch
-		# _, top5_patched_indices = torch.topk(patched_logits, 5, dim=-1)
-		# print('Top 5 patched tokens')
-		# for i in range(5):
-		# 	print(model.to_str_tokens(top5_patched_indices[:, i].squeeze()))
-		
-		# # 3. Take the top token in orig_logits and find the probability in patched_logits for each batch
-		# top1_orig_indices = torch.argmax(orig_logits, dim=-1, keepdim=True)
-	
-		# top1_orig_probs = torch.gather(orig_probs, -1, top1_orig_indices)
-		# top1_patched_probs = torch.gather(patched_probs, -1, top1_orig_indices)
-		# print('Top 1 original token probs in orig logits')
-		# print(model.to_str_tokens(top1_orig_indices))
-		# print(top1_orig_probs)
-		# print()
-		# print('Top 1 original token probs in patched logits')
-		# print(model.to_str_tokens(top1_orig_indices))
-		# print(top1_patched_probs)
-		# print()
-
-
-		# Calculate the KL divergence manually
 		kl_div = (patched_probs * (torch.log(patched_probs) - orig_logprobs)).sum(dim=-1)
 
 		# Return the average KL divergence over all batches
@@ -804,10 +598,6 @@ class ACDC():
 		receiver_hook_names_filter = lambda name: name in receiver_hook_names
 
 		model.reset_hooks()
-
-		# ========== Step 2 ==========
-		# Run on x_orig, with sender head patched from x_new, every other head frozen
-
 		hook_fn = partial(
 			self.patch_path,
 			edges=edges
@@ -940,4 +730,5 @@ acdc = ACDC(
 	heads=heads
 )
 acdc.run()
+
 # %%
