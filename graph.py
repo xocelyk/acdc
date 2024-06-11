@@ -4,9 +4,14 @@ from typing import List, Optional, Callable, Tuple, Dict, Literal, Set, Union
 from transformer_lens import utils
 from graphviz import Digraph
 
+
 class HookNode:
 	'''Represents a node in the computational graph'''
-	def __init__(self, name, index, direction='IN'):
+	def __init__(
+			self,
+			name: str,
+			index: Tuple[Union[slice, int], ...],
+			direction: Literal['OUT', 'IN'] = 'IN'):
 		'''
 		Initialize a HookNode.
 
@@ -33,9 +38,14 @@ class HookNode:
 		idx_val = sum(val * 10 ** i for i, val in enumerate(self.index) if isinstance(val, int))
 		return hash((self.name, idx_val))
 
+
 class Edge:
 	'''Represents an edge in the graph, connecting two nodes.'''
-	def __init__(self, sender, receiver, mode='ADD'):
+	def __init__(
+			self,
+			sender: HookNode,
+			receiver: HookNode,
+			mode: Literal['ADD', 'DIRECT']):
 		'''
 		Initialize an Edge.
 
@@ -59,8 +69,23 @@ class Edge:
 		'''Generate hash value based on the sender and receiver nodes of the edge.'''
 		return hash((self.sender, self.receiver))
 
+
 class ComputationalGraph:
-	def __init__(self, n_heads, n_layers, heads, empty=False):
+	'''Represents the computational graph we prune.'''
+	def __init__(
+			self,
+			n_heads: List[int],
+			n_layers: List[int], 
+			heads: List[Tuple[int, int]],
+			empty: Optional[Bool] = False):
+		'''
+		Initialize a ComputationalGraph.
+
+		:param n_heads: Number of heads in the model.
+		:param n_layers: Number of layers in the model.
+		:param heads: List of head indices to consider.
+
+		'''
 		self.n_heads = n_heads
 		self.n_layers = n_layers
 		self.heads = heads
@@ -72,7 +97,10 @@ class ComputationalGraph:
 			self.graph = self.topological_sort()
 			assert any('resid_post' in k.name for k in self.graph.keys()), "No 'resid_post' node found in the graph."
 
-	def is_cyclic_util(self, v, visited, rec_stack):
+	def __repr__(self):
+		return f"{self.graph}"
+
+	def is_cyclic_util(self, v, visited, rec_stack) -> Bool:
 		'''Recursive utility function to check for cycles in the graph.'''
 		visited.add(v)
 		rec_stack.add(v)
@@ -85,7 +113,7 @@ class ComputationalGraph:
 		rec_stack.remove(v)
 		return False
 
-	def check_for_cycle(self):
+	def check_for_cycle(self) -> Bool:
 		'''Check if the graph contains a cycle.'''
 		visited = set()
 		rec_stack = set()
@@ -95,7 +123,7 @@ class ComputationalGraph:
 					return True
 		return False
 
-	def get_head_hook_node(self, layer, head, hook_type, direction):
+	def get_head_hook_node(self, layer: int, head: int, hook_type: str , direction: Literal['IN', 'OUT']) -> HookNode:
 		'''Get a head hook node based on the layer, head, hook type, and direction.'''
 		if hook_type == 'result':
 			name = utils.get_act_name("result", layer)
@@ -108,7 +136,7 @@ class ComputationalGraph:
 			raise ValueError(f"Invalid hook type: {hook_type}")
 		return HookNode(name, idx, direction)
 
-	def get_mlp_hook_node(self, layer, hook_type, direction):
+	def get_mlp_hook_node(self, layer: int, hook_type: str, direction: Literal['IN', 'OUT']) -> HookNode:
 		'''Get an MLP hook node based on the layer, hook type, and direction.'''
 		if hook_type in ['mlp_in', 'mlp_out']:
 			name = f'blocks.{layer}.hook_{hook_type}'
@@ -117,7 +145,6 @@ class ComputationalGraph:
 			raise ValueError(f"Invalid hook type: {hook_type}")
 		return HookNode(name, idx, direction)
 
-	
 	def _add_receiver_head_edges(self, graph):
 		'''Add edges for receiver heads in the computational graph.'''
 		for receiver_layer, receiver_head in self.heads:
@@ -131,7 +158,6 @@ class ComputationalGraph:
 
 			# Connect resid_pre node to each receiver input node
 			self._connect_resid_pre_to_receiver(graph, rec_q_input, rec_k_input, rec_v_input)
-
 
 	def _get_receiver_head_input_nodes(self, receiver_layer, receiver_head):
 		'''Get the input nodes for a receiver head.'''
@@ -276,11 +302,11 @@ class ComputationalGraph:
 		# Create direct computation edges from q, k, v head inputs and head outputs in same layer
 		self._create_direct_computation_edges(graph)
 
-		# STEP 5: Add empty sender lists for nodes that only receive computation
+		# Add empty sender lists for nodes that only receive computation
 		final_graph = self._add_empty_sender_lists(graph)
 		return final_graph
 
-	def topological_sort(self):
+	def topological_sort(self) -> OrderedDict[HookNode, List[HookNode]]:
 		'''
 		Perform a topological sort on the computational graph.
 		It is important that we traverse the graph in the order of computation.
@@ -346,55 +372,47 @@ class ComputationalGraph:
 
 		self.graph = result_graph
 
-	# def merge_mlps(self):
-	# 	'''Merge MLP nodes in the computational graph.'''
-	# 	merged_graph = {}
-	# 	for receiver, senders in self.graph.items():
-	# 		new_receiver_name = self.rename_node_fn(receiver)
-	# 		new_receiver_node = HookNode(new_receiver_name, receiver.index, receiver.direction)
-	# 		if new_receiver_node not in merged_graph:
-	# 			merged_graph[new_receiver_node] = []
-	# 		merged_graph[HookNode(new_receiver_name, receiver.index, receiver.direction)].extend([HookNode(self.rename_node_fn(sender), sender.index, sender.direction) for sender in senders])
-
-	# 	# check that self loops are not added
-	# 	for node, senders in merged_graph.items():
-	# 		if node in senders:
-	# 			senders.remove(node)
-	# 	self.graph = merged_graph
-
-	def rename_node_fn(self, x):
-		print(repr(x))
-		if x.name.startswith('h') or x.name.startswith('m'):
-			return x.name
-		if 'head' in repr(x):
-			return 'h' + str(repr(x).split('.')[1]) + '.' + str(repr(x).split(' ')[-1])
-		elif 'mlp' in x.name:
-			return 'm' + str(x.name.split('.')[1])
-		elif x.name == 'blocks.11.hook_resid_post':
+	def rename_node_fn(self, node: HookNode) -> str:
+		'''
+		Helper for renaming nodes in the computational graph.
+		'''
+		if node.name.startswith('h') or node.name.startswith('m'):
+			return node.name
+		if 'head' in repr(node):
+			return 'h' + str(repr(node).split('.')[1]) + '.' + str(repr(node).split(' ')[-1])
+		elif 'mlp' in node.name:
+			return 'm' + str(node.name.split('.')[1])
+		elif node.name == 'blocks.11.hook_resid_post':
 			return 'resid_post'
-		elif x.name == 'blocks.0.hook_resid_pre':
+		elif node.name == 'blocks.0.hook_resid_pre':
 			return 'tok_embs'
 		else:
-			return x.name
+			return node.name
 
 	def rename_nodes(self):
-		merged_graph = {}
+		'''
+		Renames nodes at the end of the pruning algorithm to merge MLP in/out nodes and head input/result nodes, and rename resid_pre and resid_post nodes.
+		'''
+
+		# Change names of senders and receivers
+		result_graph = {}
 		for receiver, senders in self.graph.items():
 			new_receiver_name = self.rename_node_fn(receiver)
 			new_receiver_node = HookNode(new_receiver_name, receiver.index, receiver.direction)
-			if new_receiver_node not in merged_graph:
-				merged_graph[new_receiver_node] = []
-			merged_graph[HookNode(new_receiver_name, receiver.index, receiver.direction)].extend([HookNode(self.rename_node_fn(sender), sender.index, sender.direction) for sender in senders])
+			if new_receiver_node not in result_graph:
+				result_graph[new_receiver_node] = []
+			result_graph[HookNode(new_receiver_name, receiver.index, receiver.direction)].extend([HookNode(self.rename_node_fn(sender), sender.index, sender.direction) for sender in senders])
 
-		# check that self loops are not added
-		for node, senders in merged_graph.items():
+		# Remove self loops
+		for node, senders in result_graph.items():
 			new_senders = senders.copy()
 			for sender in senders:
 				if sender.name == node.name:
 					new_senders.remove(sender)
-			merged_graph[node] = new_senders
+			result_graph[node] = new_senders
 
-		self.graph = merged_graph
+		# Update the graph
+		self.graph = result_graph
 
 	def get_all_edges(self):
 		'''Get all edges in the computational graph.'''
@@ -420,7 +438,4 @@ class ComputationalGraph:
 				dot.edge(str(receiver.name), str(sender.name))
 
 		dot.render(filename, view=True)
-
-	def __repr__(self):
-		return f"{self.graph}"
 

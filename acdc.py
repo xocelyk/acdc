@@ -7,6 +7,7 @@ from ioi_dataset import IOIDataset
 from torch import Tensor
 from transformer_lens.hook_points import HookPoint
 
+
 class ACDC:
 	def __init__(self, config):
 		'''
@@ -137,14 +138,19 @@ class ACDC:
 			patched_logits_last_token: Float[Tensor, "batch seq d_vocab"]
 		) -> float:
 		'''
-		Returns the mean KL divergence between the clean and patched logits for the final token position in each sequence.
-		The final token position is the "answer", and determines if the model correctly performs IOI.
-		We are interested in how much the model's predictions change when we patch the paths.
+		The KL divergence is calculated as follows:
+		1. Select the last logits from each sequence for comparison. These logits correspond to the final token
+		in each sequence.
+		2. Convert the clean and patched logits to log probabilities using log_softmax.
+		3. Convert the clean log probabilities to probabilities using exp.
+		4. Calculate the KL divergence using the formula: KL(P || Q) = sum(P * (log(P) - log(Q))), where P is the
+		clean probability distribution and Q is the patched probability distribution.
+		5. Take the average KL divergence across all sequences in the batch.
 
 		Args:
 			clean_logits: The logits obtained from the clean (original) model.
 			patched_logits: The logits obtained from the patched model.
-		
+
 		Returns:
 			The average KL divergence between the clean and patched probability distributions.
 		'''
@@ -172,26 +178,18 @@ class ACDC:
 		edges : List[Edge]
 	) -> float:
 		'''
-		The KL divergence is calculated as follows:
-		1. Select the last logits from each sequence for comparison. These logits correspond to the final token
-		in each sequence.
-		2. Convert the clean and patched logits to log probabilities using log_softmax.
-		3. Convert the clean log probabilities to probabilities using exp.
-		4. Calculate the KL divergence using the formula: KL(P || Q) = sum(P * (log(P) - log(Q))), where P is the
-		clean probability distribution and Q is the patched probability distribution.
-		5. Take the average KL divergence across all sequences in the batch.
+		Takes a list of "dead" edges, performs path patching by corrupting these edges,
+		and calculates the average KL divergence between the clean and patched logits.
 
-		Args:
-			clean_logits: The logits obtained from the clean (original) model.
-			patched_logits: The logits obtained from the patched model.
-
-		Returns:
-			The average KL divergence between the clean and patched probability distributions.
+		This is akin to ablation of these paths in the computational graph.
+		By corrupting them with a contrastive signal, we can measure the impact of these paths on the model's predictions.
 		'''
+		
 		receivers = [edge.receiver for edge in edges]
 		receiver_hook_names = [receiver.name for receiver in receivers]
 
 		# Filter to only use the receiver hooks in the list of receiver hook names
+		# We only need to use receiver hooks, because we corrupt activtions at the path destinations
 		receiver_hook_names_filter = lambda name: name in receiver_hook_names
 
 		# Initialize hook function

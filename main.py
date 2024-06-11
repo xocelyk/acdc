@@ -31,10 +31,9 @@ corrupted_logits, corrupted_cache = model.run_with_cache(abc_dataset.toks, retur
 n_heads = 12
 n_layers = 12
 
-
 IOI_CIRCUIT = {
     "name mover": [
-        (9, 9),  # by importance
+        (9, 9),  # ordered by importance
         (10, 0),
         (9, 6),
     ],
