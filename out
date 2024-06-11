@@ -1,8 +1,0 @@
-// Computational Graph
-digraph {
-	graph [dpi=300 nodesep=0.5 ranksep=1 size="12,12"]
-	node [fillcolor=lightgrey fontcolor=black fontsize=12 shape=circle style=filled]
-	edge [arrowsize=0.5 color=black]
-	"blocks.0.hook_q_input head 1" [label="blocks.0.hook_q_input head 1"]
-	"blocks.0.hook_q_input head 1" -> "blocks.0.hook_resid_pre "
-}
